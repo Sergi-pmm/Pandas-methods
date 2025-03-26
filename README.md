@@ -1,4 +1,4 @@
-# Panda-methods
+# Pandas-methods
 
 # Limpieza de datos con Pandas
 
