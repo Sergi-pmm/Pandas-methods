@@ -30,11 +30,13 @@ df.fillna(0)  # Rellenar con cero
 df.fillna(df['col'].mean())  # Rellenar con la media
 ```
 
-## 3. Eliminar columnas y duplicados
+## 3. Eliminar duplicados y columnas
 ```python
-# Columnas
-df.drop('columna', axis=1, inplace=True)
-df.drop(['col1', 'col2'], axis=1, inplace=True)
+
+# Ver cuantos duplicados hay
+df.duplicated().sum()
+df.duplicated(subset=['col1']).sum()
+df.duplicated(subset=['col1','col2']).sum()
 
 # Duplicados 
 df.drop_duplicates()
@@ -45,6 +47,10 @@ df.drop_duplicates(subset=['col2'], keep=False)    # Elimina TODOS (cuidado con 
 
 # Ver duplicados antes de borrar
 df[df.duplicated(subset=['columna'], keep=False)]
+
+# Columnas
+df.drop('columna', axis=1, inplace=True)
+df.drop(['col1', 'col2'], axis=1, inplace=True)
 ```
 
 ## 4. Cambiar nombres y reordenar
