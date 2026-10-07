@@ -192,7 +192,119 @@ conteo['porcentaje'] = (conteo['cantidad'] / total * 100).round(2)
 conteo = conteo.sort_values('cantidad', ascending=False)
 ```
 
-## 9. Fechas
+## 9. Cruzar tablas (merge)
+
+Para juntar dos tablas que tienen una columna en común (lo mismo que un BUSCARV de Excel o un JOIN de SQL):
+```python
+# Añadir a cada venta los datos de su cliente
+df = pd.merge(df_ventas, df_clientes, on='id_cliente', how='left')
+
+# Lo mismo escrito desde el DataFrame
+df = df_ventas.merge(df_clientes, on='id_cliente', how='left')
+```
+
+### Parámetros principales
+- `on`: Columna (o lista de columnas) por la que se cruza. Tiene que llamarse igual en las dos tablas
+- `how`: Tipo de cruce (ver abajo). Si no se pone nada es `'inner'`
+- `left_on` / `right_on`: Si la columna se llama distinto en cada tabla (se usan en vez de `on`)
+- `suffixes`: Sufijos para las columnas que se repiten en las dos tablas. Por defecto `_x` e `_y`
+- `indicator=True`: Añade la columna `_merge` que dice de qué tabla viene cada fila
+- `validate`: Da error si la clave está duplicada donde no debería (ver más abajo)
+
+### Tipos de cruce (how)
+La tabla de la izquierda es la primera que se pone y la de la derecha la segunda.
+- `how='left'`: Todas las filas de la izquierda + lo que encuentre en la derecha. Lo que no encuentra → NaN. **LA MÁS USADA**, no pierdes ninguna fila de tu tabla principal
+- `how='inner'`: Solo las filas que están en las dos tablas (cuidado, puedes perder filas sin darte cuenta)
+- `how='right'`: Lo contrario que left
+- `how='outer'`: Todas las filas de las dos tablas, con NaN donde no cruza
+```python
+# df_ventas tiene los clientes 1, 2, 3
+# df_clientes tiene los clientes 1, 2, 4
+pd.merge(df_ventas, df_clientes, on='id_cliente', how='left')   # 1, 2, 3 (el 3 sin datos de cliente)
+pd.merge(df_ventas, df_clientes, on='id_cliente', how='inner')  # 1, 2
+pd.merge(df_ventas, df_clientes, on='id_cliente', how='right')  # 1, 2, 4 (el 4 sin datos de venta)
+pd.merge(df_ventas, df_clientes, on='id_cliente', how='outer')  # 1, 2, 3, 4
+```
+
+### Casos típicos
+```python
+# La columna se llama distinto en cada tabla
+pd.merge(df_ventas, df_clientes, left_on='cod_cliente', right_on='id', how='left')
+# Se quedan las dos columnas (cod_cliente e id), se puede borrar una con drop
+
+# Cruzar por varias columnas a la vez
+pd.merge(df_stock, df_precios, on=['marca', 'modelo'], how='left')
+
+# Columnas con el mismo nombre en las dos tablas
+pd.merge(df_2024, df_2025, on='referencia', suffixes=('_2024', '_2025'))
+# precio_2024 y precio_2025 en vez de precio_x y precio_y
+
+# Traer solo algunas columnas de la otra tabla
+pd.merge(df_ventas, df_clientes[['id_cliente', 'nombre']], on='id_cliente', how='left')
+```
+
+### Ver qué ha cruzado y qué no
+```python
+df = pd.merge(df_ventas, df_clientes, on='id_cliente', how='left', indicator=True)
+df['_merge'].value_counts()  # both / left_only / right_only
+
+# Ventas cuyo cliente no está en la tabla de clientes
+sin_cliente = df[df['_merge'] == 'left_only']
+
+# Borrar la columna cuando ya no hace falta
+df = df.drop('_merge', axis=1)
+```
+
+### Antes de cruzar (lo que más falla)
+
+**1. La clave tiene que ser del mismo tipo en las dos tablas.** Si en una es número y en la otra texto da error, y si las dos son texto pero en una pone `8302` y en la otra `08302` no cruzan. Pasa mucho con los códigos que empiezan por 0 (ver sección 5):
+```python
+df_ventas['codigo_ref'].dtype     # Comprobar el tipo en las dos
+df_productos['codigo_ref'].dtype
+
+# Dejar las dos como texto de 5 dígitos
+df_ventas['codigo_ref'] = df_ventas['codigo_ref'].astype(str).str.zfill(5)
+df_productos['codigo_ref'] = df_productos['codigo_ref'].astype(str).str.zfill(5)
+# Si viene como float con .0, primero astype(int) (ver truco de la sección 5)
+```
+
+**2. Limpiar espacios y mayúsculas.** `'Toyota '` y `'TOYOTA'` no cruzan con `'Toyota'`:
+```python
+df_stock['marca'] = df_stock['marca'].str.strip().str.upper()
+df_precios['marca'] = df_precios['marca'].str.strip().str.upper()
+```
+
+**3. Claves duplicadas en la tabla de la derecha → se multiplican filas.** Si un cliente aparece dos veces en `df_clientes`, cada venta suya sale duplicada:
+```python
+df_clientes['id_cliente'].duplicated().sum()  # Debería ser 0
+
+# Comprobar filas antes y después (con left deberían ser las mismas)
+len(df_ventas)
+df = pd.merge(df_ventas, df_clientes, on='id_cliente', how='left')
+len(df)
+
+# O que pandas avise directamente
+pd.merge(df_ventas, df_clientes, on='id_cliente', how='left', validate='many_to_one')
+# many_to_one → muchas ventas por cliente, pero cada cliente una sola vez en df_clientes
+# Si no se cumple → MergeError
+```
+
+### Juntar tablas una debajo de otra (concat)
+Para apilar tablas con las mismas columnas, por ejemplo un Excel por mes:
+```python
+df_total = pd.concat([df_enero, df_febrero, df_marzo], ignore_index=True)
+# ignore_index=True → renumera el índice (si no, se repite 0, 1, 2... de cada tabla)
+# Si una columna no está en todas las tablas → NaN en las que falta
+```
+
+### join (cruzar por índice)
+Casi siempre uso merge, pero join es un atajo cuando la clave está en el índice:
+```python
+df_clientes_idx = df_clientes.set_index('id_cliente')
+df_ventas.join(df_clientes_idx, on='id_cliente')  # how='left' por defecto
+```
+
+## 10. Fechas
 Posibles soluciones a incidencias con fechas...
 ```python
 # Convertir a fecha
@@ -214,7 +326,7 @@ df['fecha'].dt.month
 df['fecha'].dt.day
 ```
 
-## 10. Aplicar funciones
+## 11. Aplicar funciones
 ```python
 # Con función normal
 df['categoria'] = df['codigo_producto'].apply(obtener_categoria)
@@ -241,7 +353,7 @@ def obtener_categoria(codigo):
     return mapeo.get(prefijo, 'Sin categoría')
 ```
 
-## 11. Exportar a Excel
+## 12. Exportar a Excel
 ```python
 # Simple
 df.to_excel('datos.xlsx', index=False)
@@ -273,6 +385,20 @@ df.dropna(inplace=True)  # Modifica df directamente
 df = df.dropna()  # Crea nuevo DataFrame
 ```
 
+### merge() vs concat() vs join()
+- `merge()`: Cruza por columnas en común → añade columnas (el BUSCARV)
+- `concat()`: Pone tablas una debajo de otra → añade filas
+- `join()`: Como merge pero cruzando por el índice. Por defecto es `left` (merge es `inner`)
+
+### map() vs merge()
+- `map()`: Para traer **una** columna desde un diccionario o una Serie
+- `merge()`: Para traer **varias** columnas de otra tabla
+```python
+# Las dos hacen lo mismo para una sola columna
+df_ventas['nombre'] = df_ventas['id_cliente'].map(df_clientes.set_index('id_cliente')['nombre'])
+df_ventas = pd.merge(df_ventas, df_clientes[['id_cliente', 'nombre']], on='id_cliente', how='left')
+```
+
 ---
 
 ## Git (comandos básicos)
@@ -291,4 +417,4 @@ git remote -v
 
 ---
 
-**Última actualización:** Octubre 2025
+**Última actualización:** Octubre 2026
