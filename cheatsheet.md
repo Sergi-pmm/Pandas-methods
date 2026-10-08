@@ -8,7 +8,7 @@ df.head()           # Primeras filas
 df.tail()           # Últimas filas
 df.info()           # Info general + tipos de datos
 df.describe()       # Estadísticas básicas
-df.columns.tolist() # Listar columnas
+df.columns.tolist() # Listar columnas, sin el "tolist()" también se puede visualizar
 df.shape            # Número de filas y columnas
 len(df)             # Total de filas
 ```
@@ -88,7 +88,7 @@ pd.to_datetime(df['fecha'], format='%d/%m/%Y', errors='coerce')
 **Truco para códigos de referencia:**
 ```python
 # Si están en formato float con .0
-df['codigo_ref'] = df['codigo_ref'].astype(int).astype(str).str.zfill(5)
+df['codigoPostal'] = df['codigoPostal'].astype(int).astype(str).str.zfill(5)
 # Primero int (quita el .0), luego string, luego rellena con ceros
 ```
 
