@@ -365,6 +365,260 @@ with pd.ExcelWriter('informe.xlsx') as writer:
     df_resumen.to_excel(writer, sheet_name='Resumen', index=False)
 ```
 
+## 13. Preparar los df antes de analizar
+
+Lo que reviso con cada Excel nuevo antes de cruzar o analizar nada.
+
+Para probar los snippets: [`tiendas_prueba.xlsx`](tiendas_prueba.xlsx) (`RUTA = 'tiendas_prueba.xlsx'`). Son tiendas que pertenecen a cadenas: `id_tienda` identifica una tienda e `id_cadena` una cadena, que tiene varias tiendas. Por eso `id_cadena` se repite en las hojas de tiendas y es único en la hoja `cadenas`.
+
+### 13.1 Leer todas las hojas y recorrerlas
+```python
+pd.ExcelFile(RUTA).sheet_names                             # Nombres de las hojas
+hojas = pd.read_excel(RUTA, sheet_name=None)               # Todas → diccionario {nombre: df}
+hojas = pd.read_excel(RUTA, sheet_name=['2025', '2026'])   # Solo algunas
+
+for nombre, df in hojas.items():
+    print(nombre, df.shape)
+    print(df.columns.tolist())
+```
+
+### 13.2 Cabecera que no empieza en la fila 1
+Se nota porque salen columnas `Unnamed: 1`, `Unnamed: 2`...
+```python
+for nombre, df in hojas.items():
+    if df.columns.astype(str).str.contains('Unnamed').any():
+        print(nombre)
+
+pd.read_excel(RUTA, sheet_name='externa', header=None).head(10)          # Ver en qué fila empieza
+hojas['externa'] = pd.read_excel(RUTA, sheet_name='externa', header=2)   # Fila 3 de Excel = header=2
+```
+
+### 13.3 Espacios en los nombres de columna
+```python
+'Ventas' in df.columns   # False aunque se vea → hay espacios
+df.columns.tolist()      # Con tolist se ven: 'Ventas '
+
+for df in hojas.values():
+    df.columns = df.columns.str.strip()
+```
+
+### 13.4 La misma columna con nombres distintos en cada hoja
+```python
+set(hojas['2025'].columns) & set(hojas['2026'].columns)   # Comunes
+set(hojas['2025'].columns) ^ set(hojas['2026'].columns)   # Solo en una de las dos
+
+nombres = {'ID Tienda': 'id_tienda', 'Cadena ID': 'id_cadena', 'Cadena': 'cadena',
+           'Ciudad': 'ciudad', 'Ventas': 'ventas', 'Estado': 'estado'}
+for nombre in hojas:
+    hojas[nombre] = hojas[nombre].rename(columns=nombres)   # Ignora los nombres que no encuentra
+```
+**Ojo:** dentro del bucle, `df = df.rename(...)` no cambia el diccionario. Hay que guardarlo en `hojas[nombre]`.
+
+### 13.5 El mismo nombre de columna dos veces en una hoja
+Por ejemplo, una columna creada aparte con una fórmula que trae el dato de otra hoja. Al leer, pandas le pone `.1` a la segunda.
+```python
+df.columns[df.columns.str.contains(r'\.\d+$')]   # Las que ha renombrado pandas: 'estado.1'
+df.columns.duplicated().sum()                    # Da 0 aunque en Excel estén repetidas (por el .1)
+
+df = df.rename(columns={'estado.1': 'estado_externa'})   # Que el nombre diga de dónde viene
+df[df['estado'] != df['estado_externa']]                 # Filas donde no coinciden
+```
+**Ojo:**
+- El `strip` puede crear repetidas: `'estado'` y `'estado '` pasan a ser dos `'estado'`, y entonces `df['estado']` devuelve dos columnas. Comprueba `df.columns.duplicated().sum()` después del `strip` y, si sale algo, renombra antes de hacerlo.
+- `read_excel` lee el último valor que guardó Excel, no la fórmula. Si una columna con fórmula sale vacía, abre el archivo en Excel, guárdalo y vuelve a leerlo.
+
+### 13.6 Tipos: qué es número y qué no
+```python
+df.dtypes                                                  # object en una columna de números → hay texto mezclado
+df['ventas'].map(type).value_counts()                      # Tipos que hay en una columna
+df.map(type).astype(str).apply(pd.Series.value_counts).T   # En todas las columnas
+
+num = pd.to_numeric(df['ventas'], errors='coerce')
+df.loc[num.isna() & df['ventas'].notna(), 'ventas']        # Los que no se pueden convertir
+
+df['ventas_nd'] = df['ventas'] == 'n/d'                    # Guardar los textos con significado antes de convertir
+df['ventas'] = pd.to_numeric(df['ventas'].astype(str).str.replace(' ', ''), errors='coerce')
+```
+**Ojo:** sin `astype(str)`, `.str.replace` deja en NaN los valores que ya eran número.
+
+### 13.7 Ficha rápida de cada hoja
+```python
+for nombre, df in hojas.items():
+    print(nombre)
+    display(pd.DataFrame({'tipo': df.dtypes, 'con dato': df.count(), 'distintos': df.nunique()}))
+```
+Si `distintos` = `con dato` = nº de filas, esa columna no se repite y puede servir de clave.
+
+### 13.8 Limpiar ids y comprobar que la clave es única
+```python
+df['id_tienda'] = df['id_tienda'].str.strip().str.upper()
+df['id_tienda'].str.len().value_counts()     # Todos deberían tener la misma longitud
+
+df['id_tienda'].is_unique                    # ¿Una fila por tienda?
+df['id_tienda'].dropna().is_unique           # Los vacíos también cuentan como repetidos
+df[df['id_tienda'].duplicated(keep=False)]   # Ver todas las filas repetidas
+```
+
+### 13.9 Funciones para reutilizar y preparar todas las hojas de golpe
+```python
+def limpiar_columnas(df):
+    df.columns = df.columns.str.strip()
+    return df
+
+def limpiar_id(s):
+    return s.str.strip().str.upper()
+
+def a_numero(s):
+    return pd.to_numeric(s.astype(str).str.replace(' ', ''), errors='coerce')
+
+def ficha(df):
+    return pd.DataFrame({'tipo': df.dtypes, 'con dato': df.count(), 'distintos': df.nunique(),
+                         'ejemplo': df.apply(lambda s: s.dropna().iloc[0] if s.notna().any() else None)})
+
+def buscar(hojas, col, valor):
+    for nombre, df in hojas.items():
+        if col in df.columns:
+            print(nombre)
+            display(df[df[col] == valor].T)   # .T: en vertical, se lee mejor
+```
+Con las funciones, todo lo anterior en un bucle:
+```python
+nombres = {'ID Tienda': 'id_tienda', 'Cadena ID': 'id_cadena', 'Cadena': 'cadena', 'Ciudad': 'ciudad',
+           'Ventas': 'ventas', 'Estado': 'estado', 'estado.1': 'estado_externa'}
+
+hojas = pd.read_excel(RUTA, sheet_name=None)
+hojas['externa'] = pd.read_excel(RUTA, sheet_name='externa', header=2)
+
+for nombre in hojas:
+    df = limpiar_columnas(hojas[nombre]).rename(columns=nombres)
+    for col in ['id_tienda', 'id_cadena']:
+        if col in df.columns:
+            df[col] = limpiar_id(df[col])
+    if 'ventas' in df.columns:
+        df['ventas'] = a_numero(df['ventas'])
+    hojas[nombre] = df
+    print(nombre)
+    display(ficha(df))
+```
+
+### 13.10 Buscar un id en todas las hojas
+```python
+buscar(hojas, 'id_tienda', 'T005')
+buscar(hojas, 'id_cadena', 'C02')
+```
+
+### 13.11 Comparar ids entre hojas (sets)
+
+| Operación | Resultado |
+|---|---|
+| `a & b` | En las dos |
+| `a - b` | En `a` pero no en `b` |
+| `a ^ b` | En una sola de las dos |
+| `a \| b` | En cualquiera de las dos |
+| `'T005' in a` | ¿Está ese id? |
+
+**Entre dos hojas**
+```python
+ids25 = set(hojas['2025']['id_tienda'].dropna())
+ids26 = set(hojas['2026']['id_tienda'].dropna())
+
+ids25 & ids26   # En las dos
+ids25 - ids26   # Solo en 2025
+ids26 - ids25   # Solo en 2026
+
+hojas['2025'][~hojas['2025']['id_tienda'].isin(ids26)]                 # Las filas, no solo los ids
+set(hojas['2026']['id_cadena']) - set(hojas['cadenas']['id_cadena'])   # Cadenas sin ficha → set() si todo bien
+```
+
+**Entre todas las hojas: un set por hoja**
+```python
+ids = {}
+for nombre, df in hojas.items():
+    if 'id_tienda' in df.columns:
+        ids[nombre] = set(df['id_tienda'].dropna())
+
+for nombre, s in ids.items():
+    print(nombre, 'T005' in s)    # En qué hojas está una tienda concreta
+
+set.intersection(*ids.values())   # En todas las hojas
+set.union(*ids.values())          # En alguna hoja
+```
+
+**Tabla de presencia: en qué hojas está cada id y cuántas veces**
+```python
+partes = []
+for nombre, df in hojas.items():
+    if 'id_tienda' in df.columns:
+        partes.append(df[['id_tienda']].assign(hoja=nombre))
+largo = pd.concat(partes)
+
+presencia = pd.crosstab(largo['id_tienda'], largo['hoja'])   # 0 = no está, 2 = repetido en esa hoja
+presencia.loc['T005']                                        # Una tienda concreta
+presencia[(presencia == 0).any(axis=1)]                      # Las que faltan en alguna hoja
+presencia[(presencia > 1).any(axis=1)]                       # Las repetidas en alguna hoja
+```
+**Ojo:** quita los vacíos con `dropna()` antes de crear el set, y limpia los ids antes (13.8): si no, `'t003 '` y `'T003'` salen como tiendas distintas.
+
+### 13.12 Df aparte con las columnas que quiero
+```python
+d25, d26, ext, cad = hojas['2025'], hojas['2026'], hojas['externa'], hojas['cadenas']
+cols = ['id_tienda', 'id_cadena', 'ventas']
+
+t25 = d25[cols].copy()                                 # Df aparte con esas columnas
+t26 = d26.loc[d26['canal'] == 'Tienda', cols].copy()   # Filtrando filas a la vez
+ext.filter(items=cols)                                 # Ignora las que no existan (ext no tiene id_cadena)
+d26.filter(like='id_')                                 # Columnas cuyo nombre contiene 'id_'
+```
+**Ojo:** con `.copy()`, al cambiar después el df aparte no sale el `SettingWithCopyWarning`.
+
+### 13.13 concat, merge o join
+
+| Quiero... | Uso |
+|---|---|
+| Poner tablas una debajo de otra | `concat` |
+| Añadir columnas de otra tabla cruzando por una columna | `merge` |
+| Añadir columnas de una tabla cuyo índice es un id único | `join` |
+
+Parámetros y trampas de `merge`: sección 9.
+
+**concat: apilar años y marcar de dónde viene cada fila**
+```python
+largo = pd.concat([t25.assign(año=2025), t26.assign(año=2026)], ignore_index=True)
+largo.groupby('año')['ventas'].sum()
+```
+
+**merge: qué tiendas cambian entre años**
+```python
+m = t25.merge(t26, on=['id_tienda', 'id_cadena'], how='outer',
+              suffixes=('_2025', '_2026'), indicator=True, validate='one_to_one')
+m['_merge'].value_counts()   # both / left_only (solo 2025) / right_only (solo 2026)
+m[m['_merge'] != 'both']
+m['dif'] = m['ventas_2026'] - m['ventas_2025']
+```
+
+**merge: misma columna, distinta fuente**
+```python
+ext1 = ext.groupby('id_tienda', as_index=False)['ventas'].sum(min_count=1)   # Una fila por tienda antes de cruzar
+comp = t26.merge(ext1, on='id_tienda', suffixes=('_nuestras', '_externa'), validate='one_to_one')
+comp[comp['ventas_nuestras'] != comp['ventas_externa']]
+```
+
+**join: cruzar con un id único como índice**
+```python
+cad_idx = cad.set_index('id_cadena', verify_integrity=True)   # Da error si algún id se repite
+cad_idx.loc['C02']                                            # Buscar por id: una fila
+t26 = t26.join(cad_idx, on='id_cadena')                       # Cada tienda con los datos de su cadena
+
+total = t26.groupby('id_cadena')['ventas'].sum().rename('ventas_cadena')   # El índice ya es id_cadena, único
+t26 = t26.join(total, on='id_cadena')
+t26['peso'] = t26['ventas'] / t26['ventas_cadena']            # Parte de las ventas de su cadena
+cad_idx.join(total)                                           # Las dos con id_cadena de índice: sin on
+```
+**Ojo:**
+- `validate` da `MergeError` si la clave se repite donde no debería: mejor un error que filas multiplicadas sin avisar.
+- `merge` empareja los vacíos entre sí: quita antes las filas sin id.
+- `join` no comprueba nada: si el índice se repite, multiplica filas. Por eso `verify_integrity=True`.
+
 ## Diferencias importantes
 
 ### map() vs replace()
